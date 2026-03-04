@@ -244,6 +244,28 @@ main { display: grid; grid-template-columns: 400px 1fr; min-height: calc(100vh -
       <span>⚠</span>
       <span>Manual duplex — two PDFs. <a href="#" id="duplexOverride" style="color:var(--accent)">My printer supports duplex →</a></span>
     </div>
+    <div id="duplexOptions" style="display:none;margin-top:8px;">
+      <div style="font-size:0.58rem;color:var(--muted);margin-bottom:6px;">Printer flip direction</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <label style="cursor:pointer;">
+          <input type="radio" name="flipEdge" value="long" checked style="display:none" onchange="updatePreview()">
+          <div class="radio-btn active" id="flip-long" onclick="setFlip('long')" style="padding:8px 10px;">
+            <span class="rb-title">Long edge</span>
+            <span class="rb-sub">Flip like a book ← recommended</span>
+          </div>
+        </label>
+        <label style="cursor:pointer;">
+          <input type="radio" name="flipEdge" value="short" style="display:none" onchange="updatePreview()">
+          <div class="radio-btn" id="flip-short" onclick="setFlip('short')" style="padding:8px 10px;">
+            <span class="rb-title">Short edge</span>
+            <span class="rb-sub">Flip like a notepad</span>
+          </div>
+        </label>
+      </div>
+      <div style="font-size:0.58rem;color:var(--muted);margin-top:6px;line-height:1.5;">
+        Select <strong>Long edge</strong> in your printer's duplex dialog. The PDF automatically rotates even pages so everything lines up after cutting.
+      </div>
+    </div>
   </div>
 
 </div>
@@ -419,13 +441,22 @@ function setProgress(pct, txt) {
   document.getElementById('progressText').textContent = txt;
 }
 
+function setFlip(edge) {
+  document.getElementById('flip-long').classList.toggle('active', edge === 'long');
+  document.getElementById('flip-short').classList.toggle('active', edge === 'short');
+  document.querySelector(`input[value="${edge}"][name="flipEdge"]`).checked = true;
+}
+function getFlipEdge() {
+  return document.querySelector('input[name="flipEdge"]:checked')?.value || 'long';
+}
+
 document.getElementById('duplexBanner').addEventListener('click', e => {
   if (e.target.id !== 'duplexOverride') return;
   e.preventDefault();
   duplexSupported = true;
-  const b = document.getElementById('duplexBanner');
-  b.className = 'duplex-banner ok';
-  b.innerHTML = '<span>✓</span><span>Duplex enabled — one combined PDF.</span>';
+  document.getElementById('duplexBanner').className = 'duplex-banner ok';
+  document.getElementById('duplexBanner').innerHTML = '<span>✓</span><span>Duplex enabled — one combined PDF.</span>';
+  document.getElementById('duplexOptions').style.display = 'block';
 });
 document.getElementById('modalOverlay').addEventListener('click', e => {
   if (e.target === document.getElementById('modalOverlay')) document.getElementById('modalOverlay').classList.remove('visible');
@@ -622,38 +653,78 @@ function buildDoc(allGrids) {
   const colW = nbsize==='regular' ? 110 : 134;
   const ph   = nbsize==='regular' ? 210 : 98;
   const {cols, rows} = getGridDims();
+  const flipEdge = duplexSupported ? getFlipEdge() : 'long';
 
-  // Cover page first
+  // Cover page = page 1 (odd, no rotation needed)
   drawCoverPage(doc, allGrids.length, cols, rows);
 
   allGrids.forEach((grid, i) => {
     doc.addPage();
 
-    if (nbsize === 'regular') {
-      drawNonogramPDF(doc, 0, 0, colW, ph, grid, i+1, false);
-      if (opts.solution) {
-        drawNonogramPDF(doc, colW, 0, colW, ph, grid, i+1, true);
-      } else {
-        doc.setFillColor(255,255,255); doc.rect(colW,0,colW,ph,'F');
-        doc.setDrawColor(15,12,8); doc.setLineWidth(0.5); doc.rect(colW,0,colW,ph);
-      }
-    } else {
-      // Passport: 4 panels
-      const sx=(W-colW*2)/2, sy=(H-ph*2)/2;
-      drawNonogramPDF(doc, sx,    sy,    colW, ph, grid, i+1, false);
-      drawNonogramPDF(doc, sx+colW, sy,  colW, ph, grid, i+1, opts.solution);
-      drawNonogramPDF(doc, sx,    sy+ph, colW, ph, grid, i+1, false);
-      drawNonogramPDF(doc, sx+colW, sy+ph, colW, ph, grid, i+1, opts.solution);
-    }
+    // Page number within PDF: cover = 1, puzzles start at 2
+    // Even pages = back sides = need 180° rotation for long-edge duplex
+    const pageNum = i + 2; // 2, 3, 4, ...
+    const needsRotation = duplexSupported && flipEdge === 'long' && pageNum % 2 === 0;
 
-    // Fold/cut lines
-    doc.setDrawColor(100,100,100); doc.setLineWidth(0.25);
-    doc.setLineDashPattern([2,1.5],0); doc.line(colW,0,colW,H);
-    doc.setLineDashPattern([0.8,2],0); doc.setDrawColor(80,80,80); doc.line(2*colW,0,2*colW,H);
-    doc.setLineDashPattern([],0);
-    doc.setFont('times','italic'); doc.setFontSize(3.8); doc.setTextColor(140,130,110);
-    doc.text('--- fold', 2*colW+2, H/2-4);
-    doc.text('... cut',  2*colW+2, H/2);
+    if (needsRotation) {
+      // Rotate coordinate system 180° around page centre
+      // Equivalent: draw at (W-x-w, H-y-h) for every rect/panel
+      const drawRotated = (drawFn, px, py, pw, pph, ...args) =>
+        drawFn(doc, W-px-pw, H-py-pph, pw, pph, ...args);
+
+      if (nbsize === 'regular') {
+        // Back: solution on left (was right), puzzle on right (was left) — both rotated
+        if (opts.solution) {
+          drawNonogramPDF(doc, W-colW, 0, colW, H, grid, i+1, true);   // rotated left = orig right
+        } else {
+          doc.setFillColor(255,255,255); doc.rect(W-colW,0,colW,H,'F');
+          doc.setDrawColor(15,12,8); doc.setLineWidth(0.5); doc.rect(W-colW,0,colW,H);
+        }
+        drawNonogramPDF(doc, W-2*colW, 0, colW, H, grid, i+1, false); // rotated right = orig left
+      } else {
+        const sx=(W-colW*2)/2, sy=(H-ph*2)/2;
+        drawNonogramPDF(doc, W-sx-colW,    H-sy-ph,    colW, ph, grid, i+1, false);
+        drawNonogramPDF(doc, W-sx-2*colW,  H-sy-ph,    colW, ph, grid, i+1, opts.solution);
+        drawNonogramPDF(doc, W-sx-colW,    H-sy-2*ph,  colW, ph, grid, i+1, false);
+        drawNonogramPDF(doc, W-sx-2*colW,  H-sy-2*ph,  colW, ph, grid, i+1, opts.solution);
+      }
+
+      // Fold/cut lines (mirrored for rotated page)
+      doc.setDrawColor(100,100,100); doc.setLineWidth(0.25);
+      doc.setLineDashPattern([2,1.5],0); doc.line(W-colW,0,W-colW,H);
+      doc.setLineDashPattern([0.8,2],0); doc.setDrawColor(80,80,80); doc.line(W-2*colW,0,W-2*colW,H);
+      doc.setLineDashPattern([],0);
+      doc.setFont('times','italic'); doc.setFontSize(3.8); doc.setTextColor(140,130,110);
+      doc.text('--- fold', 2, H/2-4);
+      doc.text('... cut',  2, H/2);
+
+    } else {
+      // Normal (odd pages, or short-edge, or manual)
+      if (nbsize === 'regular') {
+        drawNonogramPDF(doc, 0, 0, colW, ph, grid, i+1, false);
+        if (opts.solution) {
+          drawNonogramPDF(doc, colW, 0, colW, ph, grid, i+1, true);
+        } else {
+          doc.setFillColor(255,255,255); doc.rect(colW,0,colW,ph,'F');
+          doc.setDrawColor(15,12,8); doc.setLineWidth(0.5); doc.rect(colW,0,colW,ph);
+        }
+      } else {
+        const sx=(W-colW*2)/2, sy=(H-ph*2)/2;
+        drawNonogramPDF(doc, sx,    sy,    colW, ph, grid, i+1, false);
+        drawNonogramPDF(doc, sx+colW, sy,  colW, ph, grid, i+1, opts.solution);
+        drawNonogramPDF(doc, sx,    sy+ph, colW, ph, grid, i+1, false);
+        drawNonogramPDF(doc, sx+colW, sy+ph, colW, ph, grid, i+1, opts.solution);
+      }
+
+      // Fold/cut lines
+      doc.setDrawColor(100,100,100); doc.setLineWidth(0.25);
+      doc.setLineDashPattern([2,1.5],0); doc.line(colW,0,colW,H);
+      doc.setLineDashPattern([0.8,2],0); doc.setDrawColor(80,80,80); doc.line(2*colW,0,2*colW,H);
+      doc.setLineDashPattern([],0);
+      doc.setFont('times','italic'); doc.setFontSize(3.8); doc.setTextColor(140,130,110);
+      doc.text('--- fold', 2*colW+2, H/2-4);
+      doc.text('... cut',  2*colW+2, H/2);
+    }
   });
   return doc;
 }
